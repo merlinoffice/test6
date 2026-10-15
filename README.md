@@ -7472,3 +7472,64 @@ if __name__ == "__main__":
         raise
     except Exception as _e:
         _fatal("程序意外终止", f"{_e}\n\n{traceback.format_exc()}")
+
+
+# -*- coding: utf-8 -*-
+"""
+在【正式库】上执行一次完整导入，用于：
+  1. 同步班组情况表 / 单船完成情况表 / 排布计划详情 三源的完成状态到后台工时
+  2. 修复「已完成状态仍有剩余工时」的自相矛盾（A70L007 197 道），解除排产校验拦截
+
+执行前必须：停服务 + 备份 data/aps.db（脚本不自动备份，请手动确认）
+"""
+import os, sys, sqlite3, importlib.util, datetime as dt
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+spec = importlib.util.spec_from_file_location(
+    "aps", os.path.join(HERE, "船舶排产系统_单文件版.py"))
+M = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(M)
+
+DB = os.path.join(HERE, "data", "aps.db")
+print("正式库:", DB)
+print("开始时间:", dt.datetime.now().strftime("%H:%M:%S"))
+
+conn = sqlite3.connect(DB)
+conn.row_factory = sqlite3.Row
+M.init_db(conn)
+
+
+def cnt():
+    return conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE status='已完成' AND remaining_hours>0"
+    ).fetchone()[0]
+
+
+print("修复前矛盾(已完成+有剩余):", cnt())
+
+stats = M.run_full_import(conn)
+
+print()
+print("===== 导入结果 =====")
+print("桌面同步:", stats.get("synced"))
+print("排布计划详情:")
+for x in stats.get("plan_detail", []):
+    print("   ", x)
+print("班组情况表:")
+for x in stats.get("teams", []):
+    print("   ", x)
+cr = stats.get("cross") or {}
+print("交叉核对:")
+for k in ("done", "from_team_plan", "from_realtime", "from_plan_detail",
+          "team_fixed_conflict", "remain_fixed", "created"):
+    if k in cr:
+        print(f"    {k} = {cr[k]}")
+fr = stats.get("final_remaining") or {}
+if fr:
+    print(f"最终剩余工时: {fr.get('hours')} H（{fr.get('kept')} 道计入）")
+
+print()
+print("修复后矛盾(已完成+有剩余):", cnt())
+conn.close()
+print("结束时间:", dt.datetime.now().strftime("%H:%M:%S"))
